@@ -36,7 +36,7 @@ export class ShowService {
     const query = `
       SELECT 
         st.id AS seat_id, st.row_label, st.seat_number, st.seat_type,
-        bs.booking_id IS NOT NULL AS is_booked
+        b.id IS NOT NULL AS is_booked
       FROM seats st
       JOIN shows sh ON sh.screen_id = st.screen_id
       LEFT JOIN booking_seats bs ON bs.seat_id = st.id
@@ -67,58 +67,136 @@ export class ShowService {
   }
 
   /**
-   * Phase 3 (Primary Strategy): Atomic Redis Holds using SET NX EX
+   * Phase 3 & 4: Hold seats with dual concurrency strategy
    */
-  static async holdSeatsAtomic(showId, seatIds, userId) {
-    const acquiredHolds = [];
+  static async holdSeats(showId, seatIds, userId, strategy = "redis") {
+    if (strategy === "postgres") {
+      return await this.holdSeatsPostgres(showId, seatIds, userId);
+    }
+    return await this.holdSeatsRedis(showId, seatIds, userId);
+  }
 
-    for (const seatId of seatIds) {
-      const holdKey = `hold:seat:${showId}:${seatId}`;
+  // --- Strategy A: Redis Distributed Lock ---
+  static async holdSeatsRedis(showId, seatIds, userId) {
+    const holdDuration = 300; // 5 minutes TTL
+    const acquiredLocks = [];
 
-      // Check if seat is already permanently booked in Postgres
-      const bookedCheck = await pool.query(
-        `SELECT 1 FROM booking_seats bs 
-         JOIN bookings b ON b.id = bs.booking_id 
-         WHERE b.show_id = $1 AND bs.seat_id = $2 AND b.status = 'confirmed'`,
-        [showId, seatId],
+    try {
+      for (const seatId of seatIds) {
+        const lockKey = `hold:seat:${showId}:${seatId}`;
+
+        // SET key user_id NX EX 300
+        const result = await redis.set(
+          lockKey,
+          userId,
+          "EX",
+          holdDuration,
+          "NX",
+        );
+
+        if (!result) {
+          // Conflict detected: Rollback previous holds acquired in this request
+          for (const rollbackKey of acquiredLocks) {
+            await redis.del(rollbackKey);
+          }
+          return {
+            success: false,
+            error: `Seat ${seatId} is already held by another user.`,
+            status: 409,
+          };
+        }
+        acquiredLocks.push(lockKey);
+      }
+
+      await redis.del(`seatmap:${showId}`);
+
+      return {
+        success: true,
+        message: "Seats held successfully via Redis lock",
+        held_seats: seatIds,
+        expires_in_seconds: holdDuration,
+      };
+    } catch (err) {
+      for (const rollbackKey of acquiredLocks) {
+        await redis.del(rollbackKey);
+      }
+      throw err;
+    }
+  }
+
+  // --- Strategy B: PostgreSQL Row-Level Lock ---
+  static async holdSeatsPostgres(showId, seatIds, userId) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Check if seats are already booked in DB
+      const bookedCheck = await client.query(
+        `SELECT seat_id FROM booking_seats bs
+         JOIN bookings b ON bs.booking_id = b.id
+         WHERE b.show_id = $1 AND bs.seat_id = ANY($2::int[]) AND b.status = 'confirmed'`,
+        [showId, seatIds],
       );
 
       if (bookedCheck.rows.length > 0) {
-        // Rollback acquired holds if any seat is already booked
-        for (const acquiredKey of acquiredHolds) {
-          await redis.del(acquiredKey);
-        }
+        await client.query("ROLLBACK");
         return {
           success: false,
-          reason: `Seat ${seatId} is already permanently booked.`,
+          error: `Seat ${bookedCheck.rows[0].seat_id} is already confirmed booked.`,
+          status: 409,
         };
       }
 
-      // SET hold:seat:{show_id}:{seat_id} user_id NX EX 300 (5 mins TTL)
-      const result = await redis.set(holdKey, userId, "EX", 300, "NX");
+      // Lock DB rows with NOWAIT
+      const lockQuery = `
+        SELECT id FROM seats 
+        WHERE id = ANY($1::int[]) AND screen_id = (SELECT screen_id FROM shows WHERE id = $2)
+        FOR UPDATE NOWAIT
+      `;
+      await client.query(lockQuery, [seatIds, showId]);
 
-      if (result === "OK") {
-        acquiredHolds.push(holdKey);
-      } else {
-        // Atomic acquisition failed! Rollback any holds acquired so far in this batch
-        for (const acquiredKey of acquiredHolds) {
-          await redis.del(acquiredKey);
+      const holdDuration = 300;
+      for (const seatId of seatIds) {
+        const lockKey = `hold:seat:${showId}:${seatId}`;
+        const setRes = await redis.set(
+          lockKey,
+          userId,
+          "EX",
+          holdDuration,
+          "NX",
+        );
+        if (!setRes) {
+          await client.query("ROLLBACK");
+          return {
+            success: false,
+            error: `Seat ${seatId} is already held by another user.`,
+            status: 409,
+          };
         }
+      }
+
+      await client.query("COMMIT");
+      await redis.del(`seatmap:${showId}`);
+
+      return {
+        success: true,
+        message: "Seats held successfully via PostgreSQL Row Lock",
+        held_seats: seatIds,
+        expires_in_seconds: holdDuration,
+      };
+    } catch (err) {
+      await client.query("ROLLBACK");
+      if (err.code === "55P03") {
         return {
           success: false,
-          reason: `Seat ${seatId} is already held by another user.`,
+          error: "Seats are currently locked by another transaction.",
+          status: 409,
         };
       }
+      throw err;
+    } finally {
+      client.release();
     }
-
-    // Invalidate seat map cache if present
-    await redis.del(`seatmap:${showId}`);
-
-    return {
-      success: true,
-      held_seats: seatIds,
-      expires_in_seconds: 300,
-    };
   }
 
   /**
@@ -128,7 +206,6 @@ export class ShowService {
     const client = await pool.connect();
 
     try {
-      // 1. Verify holds in Redis belong to requesting user
       for (const seatId of seatIds) {
         const holdKey = `hold:seat:${showId}:${seatId}`;
         const heldBy = await redis.get(holdKey);
@@ -143,7 +220,7 @@ export class ShowService {
 
       await client.query("BEGIN");
 
-      // 2. Idempotency Check on payment_ref
+      // Idempotency check
       const existingBooking = await client.query(
         `SELECT id, total_amount, status FROM bookings WHERE payment_ref = $1`,
         [paymentRef],
@@ -158,14 +235,12 @@ export class ShowService {
         };
       }
 
-      // Calculate price
       const showRes = await client.query(
         `SELECT base_price FROM shows WHERE id = $1`,
         [showId],
       );
       const totalAmount = Number(showRes.rows[0].base_price) * seatIds.length;
 
-      // 3. Create booking row
       const bookingRes = await client.query(
         `INSERT INTO bookings (user_id, show_id, total_amount, payment_ref, status)
          VALUES ($1, $2, $3, $4, 'confirmed') RETURNING id, created_at`,
@@ -173,7 +248,6 @@ export class ShowService {
       );
       const bookingId = bookingRes.rows[0].id;
 
-      // 4. Attach seats to booking
       for (const seatId of seatIds) {
         await client.query(
           `INSERT INTO booking_seats (booking_id, seat_id) VALUES ($1, $2)`,
@@ -183,7 +257,6 @@ export class ShowService {
 
       await client.query("COMMIT");
 
-      // 5. Cleanup Redis holds & invalidate seatmap cache
       for (const seatId of seatIds) {
         await redis.del(`hold:seat:${showId}:${seatId}`);
       }
@@ -213,12 +286,11 @@ export class ShowService {
     try {
       await client.query("BEGIN");
 
-      // 1. Fetch booking & start time
       const bookingRes = await client.query(
         `SELECT b.id, b.show_id, b.status, s.start_time 
-       FROM bookings b 
-       JOIN shows s ON s.id = b.show_id 
-       WHERE b.id = $1 AND b.user_id = $2`,
+         FROM bookings b 
+         JOIN shows s ON s.id = b.show_id 
+         WHERE b.id = $1 AND b.user_id = $2`,
         [bookingId, userId],
       );
 
@@ -234,7 +306,6 @@ export class ShowService {
         return { success: false, error: "Booking is already cancelled." };
       }
 
-      // 2. Cancellation Cutoff Window Rule (e.g., cannot cancel within 2 hours of show start)
       const currentTime = new Date();
       const showStartTime = new Date(booking.start_time);
       const hoursDifference = (showStartTime - currentTime) / (1000 * 60 * 60);
@@ -247,7 +318,6 @@ export class ShowService {
         };
       }
 
-      // 3. Mark booking as cancelled
       await client.query(
         `UPDATE bookings SET status = 'cancelled' WHERE id = $1`,
         [bookingId],
@@ -255,7 +325,6 @@ export class ShowService {
 
       await client.query("COMMIT");
 
-      // Invalidate seat map cache so the seat shows as available immediately
       await redis.del(`seatmap:${booking.show_id}`);
 
       return { success: true, message: "Booking cancelled successfully." };

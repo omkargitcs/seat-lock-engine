@@ -24,25 +24,33 @@ router.get("/shows/:id/seats", async (req, res) => {
   }
 });
 
-// POST /shows/:id/hold - Atomic Redis Hold (Phase 3)
+// POST /shows/:id/hold - Hold seats for a show (Supports ?strategy=postgres or default redis)
 router.post("/shows/:id/hold", async (req, res) => {
   try {
     const showId = req.params.id;
     const { seat_ids, user_id } = req.body;
+    const strategy = req.query.strategy || "redis"; // Read ?strategy= query param
 
-    if (!seat_ids || !user_id) {
-      return res
-        .status(400)
-        .json({ error: "seat_ids and user_id are required." });
+    if (!seat_ids || !Array.isArray(seat_ids) || seat_ids.length === 0) {
+      return res.status(400).json({ error: "seat_ids array is required." });
     }
 
-    const result = await ShowService.holdSeatsAtomic(showId, seat_ids, user_id);
+    if (!user_id) {
+      return res.status(400).json({ error: "user_id is required." });
+    }
+
+    const result = await ShowService.holdSeats(
+      showId,
+      seat_ids,
+      user_id,
+      strategy,
+    );
 
     if (!result.success) {
-      return res.status(409).json({ error: result.reason });
+      return res.status(result.status || 400).json({ error: result.error });
     }
 
-    res.status(200).json({ message: "Seats held successfully", ...result });
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

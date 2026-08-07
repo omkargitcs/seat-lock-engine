@@ -5,15 +5,16 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start":"node src/app.js",
-    "dev":"nodemon src/app.js",
-    "db:init":"node src/db/initDb.js"
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js",
+    "db:init": "node src/db/initDb.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "axios": "^1.19.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "ioredis": "^6.0.0",
