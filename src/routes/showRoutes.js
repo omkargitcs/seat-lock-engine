@@ -1,109 +1,44 @@
 import { Router } from "express";
+import { optionalAuth, requireAuth } from "../middleware/auth.js";
+import { holdLimiter } from "../middleware/rateLimiters.js";
 import { ShowService } from "../services/showService.js";
+import { openStream } from "../services/realtime.js";
+import { HttpError, toPositiveInt } from "../utils/httpError.js";
 
 const router = Router();
 
-// GET /shows/:id - Read-through cached static show details
-router.get("/shows/:id", async (req, res) => {
-  try {
-    const result = await ShowService.getShowInfo(req.params.id);
-    if (!result) return res.status(404).json({ error: "Show not found" });
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+const showId = (req) => {
+  const id = toPositiveInt(req.params.id);
+  if (!id) throw new HttpError(404, "Show not found.");
+  return id;
+};
+
+router.get("/:id", async (req, res) => res.json({ show: await ShowService.requireShow(showId(req)) }));
+
+// Seat map with live status. Sign-in is optional: signed-in users also see which seats are theirs.
+router.get("/:id/seats", optionalAuth, async (req, res) =>
+  res.json(await ShowService.getSeatMap(showId(req), req.user?.id ?? null)),
+);
+
+// Server-Sent Events: a tiny "something changed, refetch" nudge whenever seats change.
+router.get("/:id/stream", async (req, res) => {
+  const id = showId(req);
+  await ShowService.requireShow(id);
+  openStream(req, res, id);
 });
 
-// GET /shows/:id/seats - Get seat map with current status (available | held | booked)
-router.get("/shows/:id/seats", async (req, res) => {
-  try {
-    const seats = await ShowService.getShowSeats(req.params.id);
-    res.json({ show_id: req.params.id, seats });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+// ?strategy=postgres switches the locking engine (default: redis)
+router.post("/:id/hold", requireAuth, holdLimiter, async (req, res) => {
+  const strategy = req.query.strategy === "postgres" ? "postgres" : "redis";
+  res.json(await ShowService.holdSeats(showId(req), req.body?.seat_ids, req.user, strategy));
 });
 
-// POST /shows/:id/hold - Hold seats for a show (Supports ?strategy=postgres or default redis)
-router.post("/shows/:id/hold", async (req, res) => {
-  try {
-    const showId = req.params.id;
-    const { seat_ids, user_id } = req.body;
-    const strategy = req.query.strategy || "redis"; // Read ?strategy= query param
+router.delete("/:id/hold", requireAuth, async (req, res) =>
+  res.json(await ShowService.releaseHold(showId(req), req.user.id)),
+);
 
-    if (!seat_ids || !Array.isArray(seat_ids) || seat_ids.length === 0) {
-      return res.status(400).json({ error: "seat_ids array is required." });
-    }
-
-    if (!user_id) {
-      return res.status(400).json({ error: "user_id is required." });
-    }
-
-    const result = await ShowService.holdSeats(
-      showId,
-      seat_ids,
-      user_id,
-      strategy,
-    );
-
-    if (!result.success) {
-      return res.status(result.status || 400).json({ error: result.error });
-    }
-
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST /bookings/confirm - Confirm booking & insert to Postgres
-router.post("/bookings/confirm", async (req, res) => {
-  try {
-    const { show_id, seat_ids, user_id, payment_ref } = req.body;
-
-    if (!show_id || !seat_ids || !user_id || !payment_ref) {
-      return res
-        .status(400)
-        .json({ error: "Missing required booking fields." });
-    }
-
-    const result = await ShowService.confirmBooking(
-      show_id,
-      seat_ids,
-      user_id,
-      payment_ref,
-    );
-
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
-    }
-
-    res.status(201).json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST /bookings/:id/cancel - Cancel booking
-router.post("/bookings/:id/cancel", async (req, res) => {
-  try {
-    const bookingId = req.params.id;
-    const { user_id } = req.body;
-
-    if (!user_id) {
-      return res.status(400).json({ error: "user_id is required." });
-    }
-
-    const result = await ShowService.cancelBooking(bookingId, user_id);
-
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
-    }
-
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+router.post("/:id/quote", requireAuth, async (req, res) =>
+  res.json(await ShowService.quote(showId(req), req.body?.seat_ids, req.body?.coupon_code)),
+);
 
 export default router;

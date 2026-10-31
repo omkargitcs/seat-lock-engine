@@ -1,210 +1,83 @@
+/*
+  Concurrency benchmark: N signed-in users try to hold the SAME seat at the same instant.
+  Exactly one must win; everyone else must get a 409.
+
+  Run the API with DISABLE_RATE_LIMIT=1 (and optionally BCRYPT_ROUNDS=8) first:
+    DISABLE_RATE_LIMIT=1 BCRYPT_ROUNDS=8 npm run dev
+    npm run test:concurrency
+*/
 import axios from "axios";
 
-const BASE_URL = "http://localhost:3000";
-const SHOW_ID = 1;
-const TARGET_SEAT_ID = 1;
-const CONCURRENT_USERS = 50;
-const HOLD_EXPIRY = 300; // Expected TTL in seconds
+const BASE_URL = process.env.API_URL || "http://localhost:3000/api";
+const SHOW_ID = Number(process.env.SHOW_ID) || 1;
+const CONCURRENT_USERS = Number(process.env.USERS) || 50;
 
-const apiClient = axios.create({
-  baseURL: BASE_URL,
-  timeout: 5000,
-  headers: { "Content-Type": "application/json" },
-});
+const api = axios.create({ baseURL: BASE_URL, timeout: 15000, validateStatus: () => true });
 
-async function performApiRequest(method, url, data) {
-  try {
-    const response = await apiClient({ method, url, data });
-    return {
-      status: response.status,
-      data: response.data,
-      userId: data.user_id,
-    };
-  } catch (error) {
-    if (error.response) {
-      return {
-        status: error.response.status,
-        error: error.response.data.error,
-        userId: data.user_id,
-      };
-    }
-    return {
-      status: 500,
-      error: error.message,
-      userId: data.user_id,
-    };
-  }
+async function createBots(prefix, count) {
+  const run = Date.now().toString(36);
+  const bots = await Promise.all(
+    Array.from({ length: count }, async (_, i) => {
+      const email = `bot_${prefix}_${run}_${i}@load.test`;
+      const res = await api.post("/auth/register", { name: `Bot ${i + 1}`, email, password: "load-test-pass" });
+      if (res.status !== 201) throw new Error(`Bot registration failed: ${res.status} ${JSON.stringify(res.data)}`);
+      return { name: `Bot ${i + 1}`, token: res.data.token };
+    }),
+  );
+  return bots;
 }
 
-async function runConcurrencyTest(strategy = "redis") {
-  console.log(`--------------------------------------------------`);
-  console.log(
-    ` Starting Concurrency Test | Strategy: ${strategy.toUpperCase()}`,
-  );
-  console.log(
-    ` Simulating ${CONCURRENT_USERS} requests attacking Seat ID ${TARGET_SEAT_ID}...`,
-  );
-  console.log(`--------------------------------------------------\n`);
-
-  const requests = Array.from({ length: CONCURRENT_USERS }, (_, index) => {
-    const userId = `user_bot_${strategy}_${index + 1}`;
-    const payload = {
-      seat_ids: [TARGET_SEAT_ID],
-      user_id: userId,
-    };
-    const url = `/shows/${SHOW_ID}/hold?strategy=${strategy}`;
-    return performApiRequest("post", url, payload);
-  });
-
-  const startTime = Date.now();
-  const results = await Promise.all(requests);
-  const duration = Date.now() - startTime;
-
-  let successCount = 0;
-  let conflictCount = 0;
-  let internalErrorCount = 0;
-  let winner = null;
-
-  results.forEach((res) => {
-    if (res.status === 200) {
-      successCount++;
-      winner = res.userId;
-    } else if (res.status === 409) {
-      conflictCount++;
-    } else if (res.status >= 500) {
-      internalErrorCount++;
-    }
-  });
-
-  console.log(`[Metrics]`);
-  console.log(` Execution Time: ${duration} ms`);
-  console.log(` Successful Holds (200 OK): ${successCount}`);
-  console.log(` Conflicts Blocked (409 Conflict): ${conflictCount}`);
-
-  if (internalErrorCount > 0) {
-    console.log(` Internal Errors (500): ${internalErrorCount}`);
-  }
-
-  if (winner) {
-    console.log(` Winning User: ${winner}`);
-  }
-
-  console.log(`\n[Result Verification]`);
-  if (successCount === 1 && conflictCount === CONCURRENT_USERS - 1) {
-    console.log(
-      `SUCCESS: Race condition protection verified. Exactly one winner permitted.`,
-    );
-  } else if (successCount === 0 && conflictCount === CONCURRENT_USERS) {
-    console.log(
-      `FAILURE: Seat was already locked or booked before the test started.`,
-    );
-  } else if (successCount > 1) {
-    console.log(
-      `CRITICAL FAILURE: Multiple users successfully held the same seat. LOCKING STRATEGY IS BROKEN.`,
-    );
-  } else {
-    console.log(
-      `FAILURE: Unexpected result combination. Review locking implementation in backend.`,
-    );
-  }
+async function pickFreeSeats(howMany) {
+  const res = await api.get(`/shows/${SHOW_ID}/seats`);
+  if (res.status !== 200) throw new Error(`Cannot read show ${SHOW_ID}: ${res.status}`);
+  const free = res.data.seats.filter((s) => s.status === "available").slice(0, howMany);
+  if (free.length < howMany) throw new Error(`Show ${SHOW_ID} needs at least ${howMany} free seats. Try another SHOW_ID.`);
+  return free.map((s) => s.seat_id);
 }
 
-async function resetEnvironment(testSeatId) {
-  console.log(
-    `\n[Cleanup] Attempting to release hold on Seat ${testSeatId} using cancellation cutoff rule...`,
-  );
+async function runTest(strategy, seatId) {
+  console.log("--------------------------------------------------");
+  console.log(` Strategy: ${strategy.toUpperCase()}  |  ${CONCURRENT_USERS} users  |  seat ${seatId}`);
+  console.log("--------------------------------------------------");
 
-  try {
-  } catch (error) {}
+  const bots = await createBots(strategy, CONCURRENT_USERS);
+
+  const start = Date.now();
+  const results = await Promise.all(
+    bots.map((bot) =>
+      api.post(`/shows/${SHOW_ID}/hold?strategy=${strategy}`, { seat_ids: [seatId] }, {
+        headers: { Authorization: `Bearer ${bot.token}` },
+      }),
+    ),
+  );
+  const ms = Date.now() - start;
+
+  const won = results.filter((r) => r.status === 200).length;
+  const blocked = results.filter((r) => r.status === 409).length;
+  const errors = results.filter((r) => r.status >= 500).length;
+
+  console.log(` Execution time:      ${ms} ms`);
+  console.log(` Holds granted (200): ${won}`);
+  console.log(` Conflicts (409):     ${blocked}`);
+  if (errors) console.log(` Server errors (5xx): ${errors}`);
+
+  if (won === 1 && blocked === CONCURRENT_USERS - 1) console.log(" PASS: exactly one winner, zero double-holds.\n");
+  else if (won > 1) console.log(" CRITICAL FAIL: more than one user holds the same seat.\n");
+  else console.log(" FAIL: unexpected result. Is the seat already held? Re-run db:init or wait 5 minutes.\n");
+  return won === 1 && blocked === CONCURRENT_USERS - 1;
 }
 
 async function main() {
-  console.log(`SeatDrop Concurrency Benchmark Suite`);
-  console.log(`Backend URL: ${BASE_URL}\n`);
-
-  // --- Run Strategy 1: Redis SET NX EX ---
-  // Ensure Redis is clear manually (npm run redis:flush) or run db:init before starting.
-  const seatForRedis = TARGET_SEAT_ID;
-  console.log(`Running Strategy: REDIS using Seat ${seatForRedis}`);
-  await runConcurrencyTest("redis");
-
-  const seatForPostgres = TARGET_SEAT_ID + 1; // Will use Seat 2
-  console.log(`\n\n[Pausing 2 seconds for Postgres pool connection stability]`);
-  await new Promise((r) => setTimeout(r, 2000));
-
-  console.log(`Running Strategy: POSTGRES using Seat ${seatForPostgres}`);
-
-  await (async function runAdjustedPostgresTest() {
-    const strategy = "postgres";
-    console.log(`--------------------------------------------------`);
-    console.log(
-      ` Starting Concurrency Test | Strategy: ${strategy.toUpperCase()}`,
-    );
-    console.log(
-      ` Simulating ${CONCURRENT_USERS} requests attacking Seat ID ${seatForPostgres}...`,
-    );
-    console.log(`--------------------------------------------------\n`);
-
-    const requests = Array.from({ length: CONCURRENT_USERS }, (_, index) => {
-      const userId = `user_bot_${strategy}_${index + 1}`;
-      const payload = {
-        seat_ids: [seatForPostgres], // Dynamic seat assignment
-        user_id: userId,
-      };
-      const url = `/shows/${SHOW_ID}/hold?strategy=${strategy}`;
-      return performApiRequest("post", url, payload);
-    });
-
-    const startTime = Date.now();
-    const results = await Promise.all(requests);
-    const duration = Date.now() - startTime;
-
-    let successCount = 0;
-    let conflictCount = 0;
-    let internalErrorCount = 0;
-    let winner = null;
-
-    results.forEach((res) => {
-      if (res.status === 200) {
-        successCount++;
-        winner = res.userId;
-      } else if (res.status === 409) {
-        conflictCount++;
-      } else if (res.status >= 500) {
-        internalErrorCount++;
-      }
-    });
-
-    console.log(`[Metrics]`);
-    console.log(` Execution Time: ${duration} ms`);
-    console.log(` Successful Holds (200 OK): ${successCount}`);
-    console.log(` Conflicts Blocked (409 Conflict): ${conflictCount}`);
-
-    if (internalErrorCount > 0) {
-      console.log(` Internal Errors (500): ${internalErrorCount}`);
-    }
-
-    if (winner) {
-      console.log(` Winning User: ${winner}`);
-    }
-
-    console.log(`\n[Result Verification]`);
-    if (successCount === 1 && conflictCount === CONCURRENT_USERS - 1) {
-      console.log(
-        `SUCCESS: Race condition protection verified. Exactly one winner permitted.`,
-      );
-    } else if (successCount === 0 && conflictCount === CONCURRENT_USERS) {
-      console.log(
-        `FAILURE: Seat ${seatForPostgres} was already locked or booked before the test started.`,
-      );
-    } else {
-      console.log(
-        `FAILURE: Unexpected result combination. Review locking implementation in backend.`,
-      );
-    }
-  })();
-
-  console.log(`\nConcurrency Benchmark Complete.`);
+  console.log("SeatDrop concurrency benchmark");
+  console.log(`API: ${BASE_URL}   Show: ${SHOW_ID}\n`);
+  const [redisSeat, postgresSeat] = await pickFreeSeats(2);
+  const a = await runTest("redis", redisSeat);
+  await new Promise((r) => setTimeout(r, 1500));
+  const b = await runTest("postgres", postgresSeat);
+  process.exit(a && b ? 0 : 1);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err.message);
+  process.exit(1);
+});
