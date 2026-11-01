@@ -4,7 +4,7 @@
 
 **Book movies and live events on a live seat map that never sells the same seat twice.**
 <hr>
-**https://seat-lock-engine.onrender.com/**
+**https://seat-lock-engine.onrender.com/
 <hr>
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
