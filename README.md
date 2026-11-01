@@ -133,7 +133,6 @@ npm run test:concurrency                              # terminal 2
 | Backend  | Node.js 18+, Express 5                                                                |
 | Data     | PostgreSQL (bookings, catalogue), Redis (holds, cache, pub/sub)                       |
 | Auth     | JWT, bcryptjs                                                                         |
-| Type     | Fraunces (headings), Hanken Grotesk (body), IBM Plex Mono (seats, prices, references) |
 
 ## Project structure
 
