@@ -11,18 +11,32 @@
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
 
 </div>
-<p align="center">
-  <img src="docs/screenshots/s1.png" alt="Live seat map with a held selection and checkout panel" width="85%" />
-</p>
-<p align="center">
-  <img src="docs/screenshots/s2.png" alt="Live seat map with a held selection and checkout panel" width="85%" />
-</p>
-<p align="center">
-  <img src="docs/screenshots/s3.png" alt="Live seat map with a held selection and checkout panel" width="85%" />
-</p>
-<p align="center">
-  <img src="docs/screenshots/s4.png" alt="Live seat map with a held selection and checkout panel" width="85%" />
-</p>
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/s1.png" alt="Home page with featured events" />
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/s2.png" alt="Live seat map with a held selection" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Browse.</b> Filter events by city and type.</sub></td>
+    <td align="center"><sub><b>Choose seats.</b> Live map with a 5-minute hold.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/s3.png" alt="Admin Events Creation" />
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/s4.png" alt="Admin Analytics Dashboard" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Pay.</b> Server-calculated prices and coupons.</sub></td>
+    <td align="center"><sub><b>Your ticket.</b> Booking ID and seat details.</sub></td>
+  </tr>
+</table>
 
 
 ---
