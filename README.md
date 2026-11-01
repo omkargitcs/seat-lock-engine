@@ -33,8 +33,8 @@
     </td>
   </tr>
   <tr>
-    <td align="center"><sub><b>Pay.</b> Server-calculated prices and coupons.</sub></td>
-    <td align="center"><sub><b>Your ticket.</b> Booking ID and seat details.</sub></td>
+    <td align="center"><sub><b>Manage events.</b> Create events, set a poster colour and feature them on the home page.</sub></td>
+    <td align="center"><sub><b>Track sales.</b> Revenue, bookings, tickets sold and the fullest upcoming shows.</sub></td>
   </tr>
 </table>
 
