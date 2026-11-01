@@ -2,23 +2,6 @@
 
 # SeatDrop
 
-**Book movies and live events with seat maps that never double-sell a seat.**
-
-![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)
-![Node](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white)
-![Express](https://img.shields.io/badge/Express-5-000000?logo=express&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
-
-[Screenshots](#screenshots) · [Features](#features) · [How the seat engine works](#how-the-seat-engine-works) · [Getting started](#getting-started) · [API](#api-reference)
-
-</div>
-
-<div align="center">
-
-# SeatDrop
-
 **Book movies and live events on a live seat map that never sells the same seat twice.**
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
