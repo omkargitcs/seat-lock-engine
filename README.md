@@ -11,6 +11,19 @@
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
 
 </div>
+<p align="center">
+  <img src="docs/screenshots/s1.png" alt="Live seat map with a held selection and checkout panel" width="85%" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/s2.png" alt="Live seat map with a held selection and checkout panel" width="85%" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/s3.png" alt="Live seat map with a held selection and checkout panel" width="85%" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/s4.png" alt="Live seat map with a held selection and checkout panel" width="85%" />
+</p>
+
 
 ---
 
